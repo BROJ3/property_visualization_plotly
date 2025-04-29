@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Interactive Chart{% endblock %}
+
+{% block content %}
+  <h1>Toni Crnjak - IA 628 Plotly Assignment</h1>
+
+  <label for="field">Choose a field:</label>
+  <select id="field"></select>
+
+  <label for="chart_type">Chart type:</label>
+  <select id="chart_type">
+    <option value="ts">Monthly Avg (Time Series)</option>
+    <option value="hist">Distribution (Histogram)</option>
+    <option value="bar_counts">Counts by Field</option>
+    <option value="bar_nbhd">Avg by Neighborhood</option>
+  </select>
+
+  <div id="chart" style="width:90%; height:500px; margin-top:20px;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const payload     = {{ payload|safe }};
+  const selectField = document.getElementById('field');
+  const selectChart = document.getElementById('chart_type');
+  const chartDiv    = document.getElementById('chart');
+
+  // repopulate field dropdown depending on chart type
+  function populateFieldOptions() {
+    const cols = (selectChart.value === 'bar_counts')
+      ? payload.all_cols
+      : payload.numeric_cols;
+    selectField.innerHTML = '';
+    cols.forEach(col => {
+      const opt = document.createElement('option');
+      opt.value       = col;
+      opt.textContent = col;
+      if (col === payload.y_col) opt.selected = true;
+      selectField.appendChild(opt);
+    });
+  }
+
+  selectChart.addEventListener('change', () => {
+    populateFieldOptions();
+    draw();
+  });
+  populateFieldOptions();
+
+  function percentile(arr, p) {
+    const s = arr.slice().sort((a,b)=>a-b);
+    return s[Math.floor(p*(s.length-1))];
+  }
+
+  function draw() {
+    const ycol     = selectField.value;
+    const chartTyp = selectChart.value;
+
+    fetch(`/data?ycol=${encodeURIComponent(ycol)}&chart_type=${chartTyp}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          chartDiv.innerHTML = `<p style="color:red;">${data.error}</p>`;
+          return;
+        }
+
+        let traces, layout;
+
+        if (chartTyp === 'ts') {
+          const x = data.x;
+          const y = data.y.map(v=>v===null?0:v);
+          const thresh = 300_000;  // pivot for outliers
+
+          const inIdxs  = y.map((v,i)=>v<=thresh?i:-1).filter(i=>i>=0);
+          const outIdxs = y.map((v,i)=>v> thresh?i:-1).filter(i=>i>=0);
+
+          const x_in  = inIdxs.map(i=>x[i]),
+                y_in  = inIdxs.map(i=>y[i]),
+                x_out = outIdxs.map(i=>x[i]),
+                y_out = outIdxs.map(i=>y[i]);
+
+          traces = [{
+            x: x_in, y: y_in,
+            mode: 'lines+markers',
+            type: 'scatter',
+            name: `${ycol} (≤ $${thresh.toLocaleString()})`,
+            yaxis: 'y1'
+          },{
+            x: x_out, y: y_out,
+            mode: 'markers',
+            type: 'scatter',
+            marker: { color: 'red', size: 10 },
+            name: `> $${thresh.toLocaleString()} (outliers)`,
+            yaxis: 'y2'
+          }];
+
+          layout = {
+            xaxis: { title: 'Month' },
+            yaxis: {
+              title: ycol,
+              side: 'left',
+              range: [
+                Math.min(...y_in)*0.9,
+                Math.max(...y_in)*1.1
+              ]
+            },
+            yaxis2: {
+              title: 'Outlier scale',
+              overlaying: 'y',
+              side: 'right',
+              range: [
+                Math.min(...y_out)*0.9,
+                Math.max(...y_out)*1.05
+              ]
+            },
+            legend: { x: 0.01, y: 1.15 }
+          };
+        }
+        else if (chartTyp === 'hist') {
+          const vals = data.raw_y.filter(v=>v>0);
+
+          if (ycol === 'YearBuilt') {
+            const decades = vals.map(v=>Math.floor(v/10)*10);
+            const start = Math.min(...decades),
+                  end   = Math.max(...decades)+10;
+
+            traces = [{
+              x: decades,
+              type: 'histogram',
+              xbins: { start, end, size:10 },
+              name: ycol
+            }];
+            layout = {
+              xaxis: { title: `${ycol} (by decade)` },
+              yaxis: { title: 'Count' }
+            };
+          } else {
+            const cap = percentile(vals,0.95),
+                  filt = vals.filter(v=>v<=cap);
+
+            // choose log for very skewed money fields
+            const logFields = [
+              'Total Assessed Value'
+            ];
+            const isLog = logFields.includes(ycol);
+
+            traces = [{
+              x: filt,
+              type: 'histogram',
+              nbinsx: 80,
+              name: ycol
+            }];
+            const xcfg = { title: ycol };
+            if (isLog) xcfg.type='log';
+            else       xcfg.range=[Math.min(...filt),Math.max(...filt)];
+
+            layout = {
+              xaxis: xcfg,
+              yaxis: { title: 'Count' }
+            };
+          }
+        }
+        else if (chartTyp === 'bar_counts') {
+          traces = [{
+            x: data.x,
+            y: data.y,
+            type: 'bar',
+            name: `Count of ${ycol}`
+          }];
+          layout = {
+            xaxis: { title: ycol },
+            yaxis: { title: `Count of ${ycol}` }
+          };
+        }
+        else if (chartTyp === 'bar_nbhd') {
+          traces = [{
+            x: data.x,
+            y: data.y,
+            type: 'bar',
+            name: `Avg ${ycol}`
+          }];
+          const ycfg = { title: `Avg ${ycol}` };
+          if (ycol === 'YearBuilt') {
+            const mn = Math.min(...data.y),
+                  mx = Math.max(...data.y);
+            ycfg.range = [mn - 5, mx + 5];
+          }
+          layout = {
+            xaxis: { title: 'Neighborhood' },
+            yaxis: ycfg
+          };
+        }
+
+        Plotly.newPlot(chartDiv, traces, layout, { responsive: true });
+      });
+  }
+
+  selectField.addEventListener('change', draw);
+  draw();
+</script>
+{% endblock %}
