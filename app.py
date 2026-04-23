@@ -66,7 +66,7 @@ def data():
         if not pd.api.types.is_numeric_dtype(df[ycol]):
             return jsonify(error=f"column {ycol!r} not numeric"), 400
         df['dt']  = pd.to_datetime(df['MostRecentSaleDate'])
-        monthly   = df.set_index('dt')[ycol].resample('M').mean().dropna()
+        monthly   = df.set_index('dt')[ycol].resample('ME').mean().dropna()
         x         = monthly.index.strftime('%Y-%m').tolist()
         y         = [float(v) for v in monthly.tolist()]
         return jsonify(x=x, y=y, y_col=ycol)
